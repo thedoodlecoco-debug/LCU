@@ -8,7 +8,6 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from flask import Flask
 from threading import Thread
 
 # ---- CONFIG & ENV ----
