@@ -1,4 +1,4 @@
-# bot.py
+    # bot.py
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -8,12 +8,13 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from flask import Flask
+from threading import Thread
 
 # ---- CONFIG & ENV ----
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID")) if os.getenv("LOG_CHANNEL_ID") else None
-# prefix kept for backwards compatibility but not used for slash commands
 PREFIX = os.getenv("BOT_PREFIX", "/")
 
 # ---- INTENTS ----
@@ -21,21 +22,13 @@ intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
 intents.message_content = True
-
-# Using commands.Bot so we can reuse some helpers if needed
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 tree = bot.tree
 
 # ---- DATA STORE ----
 DATA_FILE = "security_data.json"
 if not os.path.exists(DATA_FILE):
-    DATA = {
-        "warnings": {},
-        "jails": {},
-        "backups": {},
-        "tags": {},
-        "config": {}
-    }
+    DATA = {"warnings": {}, "jails": {}, "backups": {}, "tags": {}, "config": {}}
     with open(DATA_FILE, "w") as f:
         json.dump(DATA, f, indent=2)
 else:
@@ -56,11 +49,10 @@ async def log(guild: discord.Guild, text: str):
             try:
                 await ch.send(f"[{datetime.utcnow().isoformat()} UTC] {text}")
             except Exception:
-                # ignore send errors to log channel
                 pass
 
 # ---- ANTI-SPAM ----
-SPAM_TRACK = {}  # {guild_id: {user_id: [timestamps]}}
+SPAM_TRACK = {}
 SPAM_THRESHOLD = int(os.getenv("SPAM_THRESHOLD", "6"))
 SPAM_WINDOW = int(os.getenv("SPAM_WINDOW", "8"))
 
@@ -73,6 +65,20 @@ async def anti_spam_cleaner():
             if not SPAM_TRACK[guild_id][uid]:
                 del SPAM_TRACK[guild_id][uid]
 
+# ---- FLASK KEEPALIVE SERVER ----
+app = Flask("")
+
+@app.route("/")
+def home():
+    return "Bot is running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
+Thread(target=run_web).start()
+
+# ---- DISCORD EVENTS ----
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} ({bot.user.id})")
@@ -85,14 +91,12 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    # keep the anti-spam working for text messages
     if message.author.bot or not message.guild:
         return
     gid = message.guild.id
     uid = message.author.id
     now = time.time()
     SPAM_TRACK.setdefault(gid, {}).setdefault(uid, []).append(now)
-    # prune old
     SPAM_TRACK[gid][uid] = [t for t in SPAM_TRACK[gid][uid] if now - t <= SPAM_WINDOW]
     if len(SPAM_TRACK[gid][uid]) >= SPAM_THRESHOLD:
         role = discord.utils.get(message.guild.roles, name="Muted")
@@ -111,11 +115,9 @@ async def on_message(message: discord.Message):
             except Exception:
                 pass
         SPAM_TRACK[gid][uid] = []
-    # important: don't call process_commands for slash-based flow
-    # but keep it so text commands (if any) would still work
     await bot.process_commands(message)
 
-# ---- MOD CHECK (for slash commands) ----
+# ---- MOD CHECK ----
 def is_mod():
     async def predicate(interaction: discord.Interaction) -> bool:
         if not interaction.guild:
@@ -124,12 +126,12 @@ def is_mod():
         return perms.manage_guild or perms.administrator
     return app_commands.check(predicate)
 
-# ---- STORAGE FOR ANTIRAID/INVITE ETC. ----
-INVITE_BLOCK = {}   # gid -> bool
-ANTI_RAID = {}      # gid -> bool
-SAFE_MODE = {}      # gid -> bool
-WHITELIST = {}      # gid -> set of tuples (entity, id)
-BLACKLIST = {}      # gid -> set of tuples (entity, id)
+# ---- STORAGE ----
+INVITE_BLOCK = {}
+ANTI_RAID = {}
+SAFE_MODE = {}
+WHITELIST = {}
+BLACKLIST = {}
 
 # -----------------------------
 # ---- FULL SLASH COMMANDS ----
@@ -796,6 +798,17 @@ async def pingdb_cmd(interaction: discord.Interaction):
 
 # -----------------------------
 # End of fully implemented commands
+# -----------------------------
+# ---- EVENTS ----
+@bot.event
+async def on_message_delete(message: discord.Message):
+    if message.guild:
+        await log(message.guild, f"Message deleted in {message.channel}: {message.content}")
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    if before.guild:
+        await log(before.guild, f"Message edited in {before.channel} by {before.author}: `{before.content}` -> `{after.content}`")
 # -----------------------------
 
 if __name__ == "__main__":
